@@ -343,7 +343,14 @@ fun FacesScreen(a: MainActivity) {
             }
             if (r.size == 1) Spacer(Modifier.weight(1f))
         }
-        if (ui.official.isNotEmpty()) {
+        LaunchedEffect(s.link) { if (s.link == Watch.Link.READY && ui.official.isEmpty()) Faces.loadCatalog() }
+        if (ui.official.isEmpty()) {
+            Section("Official faces for your watch")
+            Card {
+                Text("Official faces load from the GloryFit catalog while the watch is connected (needs internet).", color = C.Muted, fontSize = 12.sp, modifier = Modifier.padding(bottom = 6.dp))
+                Btn("Load official faces", enabled = s.link == Watch.Link.READY) { Watch.scope.launch { Faces.loadCatalog() } }
+            }
+        } else {
             Section("Official faces for your watch")
             for (o in ui.official.take(20)) Card {
                 Row(verticalAlignment = Alignment.CenterVertically) {
