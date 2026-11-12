@@ -177,6 +177,8 @@ class FaceFile(val src: ByteArray) {
                     var same = mine.size == orig
                     if (same) for (k in mine.indices) if (mine[k] != src[it.offset + k]) { same = false; sb.append("    re-encode differs at byte $k\n"); break }
                     sb.append("    re-encode: mine=${mine.size} official=$orig identical=$same\n")
+                    val st = rleStats(src, it.offset, it.width, it.height)
+                    sb.append("    groups: max literal=${st[0]} max run=${st[1]} mixed(size>1,count>1)=${st[2]} total=${st[3]}\n")
                 }
             }
         }
@@ -240,6 +242,27 @@ class FaceFile(val src: ByteArray) {
             return px
         }
 
+        /** Largest literal group and run the encoder may write (set from what the official face uses). */
+        @Volatile var maxLiteral = 255
+        @Volatile var maxRun = 255
+
+        /** [max literal size, max run count, mixed groups, total groups] in one RLE frame. */
+        fun rleStats(b: ByteArray, start: Int, w: Int, h: Int): IntArray {
+            var ml = 0; var mr = 0; var mixed = 0; var total = 0
+            val table = start + 4
+            for (y in 0 until h) {
+                var c = table + u32(b, table + y * 4); var n = 0
+                while (n < w) {
+                    val size = b[c].toInt() and 0xff; val count = b[c + 1].toInt() and 0xff; c += 2
+                    if (size == 0 || count == 0) break
+                    total++; if (size > 1 && count > 1) mixed++
+                    if (count == 1) ml = maxOf(ml, size) else if (size == 1) mr = maxOf(mr, count)
+                    c += size * 2; n += size * count
+                }
+            }
+            return intArrayOf(ml, mr, mixed, total)
+        }
+
         fun rleEncodeFrame(px: IntArray, w: Int, h: Int): ByteArray {
             val rows = (0 until h).map { y -> rleRow(IntArray(w) { to565(px[y * w + it]).let { v -> if (px[y * w + it] ushr 24 == 0) 0 else v } }) }
             val table = h * 4
@@ -256,10 +279,10 @@ class FaceFile(val src: ByteArray) {
             var i = 0
             while (i < p.size) {
                 var e = i + 1
-                while (e < p.size && p[e] == p[i] && e - i < 255) e++
+                while (e < p.size && p[e] == p[i] && e - i < maxRun) e++
                 if (e - i >= 2) { o.write(1); o.write(e - i); o.write(p[i] ushr 8); o.write(p[i] and 0xff); i = e; continue }
                 val s = i; i++
-                while (i < p.size && i - s < 255) { if (i + 1 < p.size && p[i + 1] == p[i]) break; i++ }
+                while (i < p.size && i - s < maxLiteral) { if (i + 1 < p.size && p[i + 1] == p[i]) break; i++ }
                 o.write(i - s); o.write(1)
                 for (k in s until i) { o.write(p[k] ushr 8); o.write(p[k] and 0xff) }
             }

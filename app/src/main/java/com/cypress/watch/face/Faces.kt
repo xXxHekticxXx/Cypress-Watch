@@ -45,6 +45,14 @@ object Faces {
         if (f.item(17) == null) { ProtoLog.info("template ($from) has no background element"); return false }
         template = b; previews.clear()
         runCatching { f.report().lines().forEach { ProtoLog.info(it) } }
+        // write runs no longer than the official encoder does (the watch's decoder may not handle longer ones)
+        runCatching {
+            var ml = 0; var mr = 0
+            for (e in f.items) if (f.isRle(e.type)) FaceFile.rleStats(b, e.offset, e.width, e.height).let { ml = maxOf(ml, it[0]); mr = maxOf(mr, it[1]) }
+            if (ml >= 2) FaceFile.maxLiteral = ml
+            if (mr >= 2) FaceFile.maxRun = mr
+            ProtoLog.info("encoder limits: literal<=${FaceFile.maxLiteral} run<=${FaceFile.maxRun}")
+        }
         ui.value = ui.value.copy(templateState = "Using a ${f.width}×${f.height} official face as the base (format v${f.version})", templateReady = true)
         return true
     }
