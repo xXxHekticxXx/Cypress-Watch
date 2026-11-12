@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
 import com.cypress.watch.ProtoLog
+import com.cypress.watch.hex
 import com.cypress.watch.ble.Proto
 import com.cypress.watch.ble.Watch
 import com.cypress.watch.svc.Sync
@@ -156,6 +157,7 @@ object Faces {
         }
         // (digit/hand recolouring is off until the rebuilt file is confirmed safe on this watch)
         val out = f.build()
+        FaceFile.putU32(out, 0, 990_000_000 + i)
         // sanity check: what we made must read back
         FaceFile(out).items.forEach { require(FaceFile(out).decode(it) != null || f.version >= 3) { "rebuilt face doesn't decode" } }
         return out
@@ -199,72 +201,114 @@ object Faces {
         }
     }
 
+    /**
+     * GloryFit "JX" face transfer (the same sequence the official app uses):
+     *   apply the face id first (01 E3 AB 05 … 01) — the watch answers operate=1 when it wants the file
+     *   01 E3 AB 03 01 01            start            -> 01 E3 AC 02 01 02 ready
+     *   01 E4 AB 01 <idx BE16> <data> sections (file sent as-is), no gaps; the watch sends status 7 after every 4 KB
+     *   01 E3 AB 04 01 01            all sent         -> 01 E3 AC 02 01 01 stored + CRC verified
+     * status: 1 done, 2 ready, 3 cancelled, 4 CRC failed, 5 too big, 6 resume from <BE16, 1-based>, 7 continue, 8 full
+     */
     private suspend fun uploadOnce(data: ByteArray, label: String, attempt: Int) {
-        val before = Sync.faces.value.map { it.id }.toSet()
         val events = kotlinx.coroutines.channels.Channel<ByteArray>(kotlinx.coroutines.channels.Channel.UNLIMITED)
         val l: (ByteArray) -> Unit = { p -> if (p.size >= 4 && (p[1].toInt() and 0xff) == 0xe3) events.trySend(p) }
         Watch.packetListeners += l
         fun u(p: ByteArray, i: Int) = p[i].toInt() and 0xff
-        // status from the watch: 01 e3 ac 02 01 <code>  (2 ready, 4 checksum error, 5 too big, 6 resend from <hi lo>, 7 keep going, 8 full)
         fun status(p: ByteArray) = if (p.size >= 6 && u(p, 2) == 0xac && u(p, 3) == 0x02) u(p, 5) else null
+        fun drain() { while (events.tryReceive().isSuccess) { } }
+        val id = FaceFile.u32(data, 0).toLong() and 0xffffffffL
         try {
-            ProtoLog.info("face upload: $label ${data.size} bytes (try $attempt)")
+            ProtoLog.info("face upload: $label ${data.size} bytes, id $id (try $attempt)")
+            // 1. tell the watch which face this is; it answers whether it needs the file
+            drain()
+            Watch.send(Proto.faceApply(id, "1.0.0", 1))
+            val ap = withTimeoutOrNull(8000) { var r: ByteArray; do { r = events.receive() } while (!(u(r, 2) == 0xab && u(r, 3) == 0x05)); r }
+            val operate = if (ap != null && ap.size >= 15) u(ap, 14) else 1
+            ProtoLog.info("apply reply: ${ap?.hex() ?: "none"} -> operate $operate")
+            if (operate != 1) {
+                ui.value = ui.value.copy(progress = null, message = "$label is already on your watch — switched to it.")
+                Sync.current.value = id; Watch.send(Proto.faceList()); return
+            }
+            // 2. start
+            drain()
             Watch.send(Proto.faceUploadStart())
-            val start = withTimeoutOrNull(8000) { var r: ByteArray; do { r = events.receive() } while (status(r) == null); r }
+            val start = withTimeoutOrNull(15000) { var r: ByteArray; do { r = events.receive() } while (status(r) == null); r }
             when (val code = start?.let { status(it) }) {
-                null -> ProtoLog.info("no start reply; trying anyway")
+                null -> error("the watch didn't answer the start request")
+                2 -> {}
                 5 -> error("the watch says the face is too big")
                 8 -> error("the watch is full. On the watch, long-press the face, delete a downloaded face, then try again")
-                2 -> {}
-                else -> ProtoLog.info("start reply code $code; continuing")
+                else -> throw Stopped(code)
             }
-            val slice = (Watch.maxPacket - 5).coerceAtLeast(15)
-            val chunks = (data.size + slice - 1) / slice
-            fun frame(k: Int) = Proto.b(1, 0xe3, 0xab, 0x01, k and 0xff) + data.copyOfRange(k * slice, minOf(data.size, (k + 1) * slice))
-            // A few pieces in flight at once (all at once froze the watch; one at a time was too slow and it timed out).
-            // A fast link is requested for the transfer so each round trip is ~15 ms instead of ~120 ms.
-            val window = 4
-            var acked = 0
-            var next = 0
-            val sent = chunks
-            val t0 = System.currentTimeMillis()
+            // 3. sections
+            val packet = (Watch.maxPacket).coerceIn(20, 512)
+            val chunk = packet - 6
+            val total = (data.size + chunk - 1) / chunk
+            ProtoLog.info("${data.size} B in $total sections of $chunk B")
             Watch.fastLink(true)
+            val t0 = System.currentTimeMillis()
             try {
-                delay(300)
-                while (acked < chunks) {
-                    while (next < chunks && next - acked < window) { Watch.send(frame(next)); next++ }
-                    val r = withTimeoutOrNull(10000) { events.receive() } ?: error("the watch stopped answering at piece $acked of $chunks")
-                    val st = status(r)
-                    when {
-                        st == 4 || st == 5 || st == 8 -> { Watch.clearQueue(); throw Stopped(st) }
-                        st == 6 && r.size >= 8 -> {
-                            val from = ((u(r, 6) shl 8) or u(r, 7)).coerceIn(0, chunks - 1)
-                            ProtoLog.info("watch asked to resend from piece $from")
-                            Watch.clearQueue(); acked = from; next = from
-                        }
-                        r.size == 5 && u(r, 2) == 0xab && u(r, 3) == 0x01 && u(r, 4) != 0xfd -> {
-                            val d = (u(r, 4) - (acked and 0xff)) and 0xff
-                            if (d < window && acked + d < next) acked += d + 1
-                        }
+                var section = 0
+                var block = 0
+                var continues = 0
+                fun handle(r: ByteArray): Int? {   // returns a resume section, throws on refusal
+                    when (val st = status(r)) {
+                        7 -> continues++
+                        6 -> if (r.size >= 8) return maxOf(0, ((u(r, 6) shl 8) or u(r, 7)) - 1)
+                        1, 3, 4, 5, 8 -> { Watch.clearQueue(); throw Stopped(st) }
+                        else -> {}
                     }
-                    ui.value = ui.value.copy(progress = acked / chunks.toFloat(), message = "Sending $label… ${acked * 100 / chunks}%")
+                    return null
                 }
+                while (section < total) {
+                    val off = section * chunk
+                    val len = minOf(chunk, data.size - off)
+                    Watch.send(Proto.b(1, 0xe4, 0xab, 0x01, (section ushr 8) and 0xff, section and 0xff) + data.copyOfRange(off, off + len))
+                    var resume: Int? = null
+                    while (true) { val r = events.tryReceive().getOrNull() ?: break; handle(r)?.let { resume = it } }
+                    ui.value = ui.value.copy(progress = (section + 1) / total.toFloat(), message = "Sending $label… ${(section + 1) * 100 / total}%")
+                    if (resume != null) {
+                        ProtoLog.info("watch asked to resume at section $resume")
+                        Watch.clearQueue(); section = resume!!; block = section * chunk / 4096; continue
+                    }
+                    if (section + 1 >= total) break
+                    val nextBlock = (section + 1) * chunk / 4096
+                    if (nextBlock != block) {
+                        block = nextBlock
+                        // wait for the watch's "4 KB consumed" (status 7); the app carries on after 5 s
+                        val want = continues + 1
+                        val ok = withTimeoutOrNull(5000) {
+                            while (continues < want && resume == null) handle(events.receive())?.let { resume = it }
+                        }
+                        if (ok == null) ProtoLog.info("no flow-control ack after section $section, continuing")
+                        if (resume != null) {
+                            ProtoLog.info("watch asked to resume at section $resume")
+                            Watch.clearQueue(); section = resume!!; block = section * chunk / 4096; continue
+                        }
+                    } else if ((section + 1) % 10 == 0) delay(20)
+                    section++
+                }
+                // let the queue empty before announcing the end
+                while (Watch.queued > 0) { events.tryReceive().getOrNull()?.let { handle(it) }; delay(20) }
+                ProtoLog.info("sent $total sections in ${System.currentTimeMillis() - t0} ms")
             } finally { Watch.fastLink(false) }
-            ProtoLog.info("sent $sent pieces in ${System.currentTimeMillis() - t0} ms")
-            // closing packet carries the xor of every byte of every piece
-            var xor = 0
-            for (k in 0 until chunks) for (v in frame(k)) xor = xor xor (v.toInt() and 0xff)
-            Watch.send(Proto.b(1, 0xe3, 0xab, 0x01, 0xfd, xor))
-            ui.value = ui.value.copy(progress = 1f, message = "Finishing…")
-            val end = withTimeoutOrNull(15000) { var r: ByteArray; do { r = events.receive() } while (!((r.size >= 5 && u(r, 4) == 0xfd) || status(r) in listOf(4, 5, 8))); r }
-            end?.let { status(it) }?.takeIf { it in listOf(4, 5, 8) }?.let { throw Stopped(it) }
-            ProtoLog.info("upload finished: ${end?.joinToString(" ") { "%02x".format(it) } ?: "no closing reply"}")
-            delay(1500)
+            // 4. end + verdict
+            delay(500)
+            Watch.send(Proto.b(1, 0xe3, 0xab, 0x04, 0x01, 0x01))
+            ui.value = ui.value.copy(progress = 1f, message = "Watch is checking the file…")
+            val fin = withTimeoutOrNull(60000) { var r: ByteArray; do { r = events.receive() } while (status(r) !in listOf(1, 3, 4, 5, 8)); status(r) }
+            ProtoLog.info("transfer verdict: ${fin ?: "no answer"}")
+            when (fin) {
+                1 -> {}
+                null -> error("the watch never confirmed the file")
+                else -> throw Stopped(fin)
+            }
+            delay(800)
+            Watch.send(Proto.faceApply(id, "1.0.0", 1))
+            Sync.current.value = id
+            delay(1200)
             Watch.send(Proto.faceList())
-            delay(2500)
-            val new = Sync.faces.value.firstOrNull { it.id !in before }
-            if (new != null) { Watch.send(Proto.faceApply(new.id, new.version, 1)); Sync.current.value = new.id }
-            ui.value = ui.value.copy(progress = null, message = if (new != null) "$label is on your watch." else "$label was sent. If it isn't showing, long-press the watch face and pick it.")
+            ui.value = ui.value.copy(progress = null, message = "$label is on your watch.")
         } finally {
             Watch.packetListeners -= l
         }
