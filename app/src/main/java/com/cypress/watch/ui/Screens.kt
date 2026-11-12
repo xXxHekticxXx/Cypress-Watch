@@ -310,15 +310,36 @@ fun FacesScreen(a: MainActivity) {
             ui.message?.let { Text(it, color = C.Ink) }
             ui.progress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), color = C.Accent) }
         }
+        ui.needRoom?.let { full ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { Faces.cancelReplace() },
+                containerColor = C.Panel,
+                title = { Text("Watch is full", color = C.Ink) },
+                text = {
+                    Column {
+                        Text("Your watch holds ${Faces.slots} downloaded faces. Pick one to replace:", color = C.Muted, modifier = Modifier.padding(bottom = 8.dp))
+                        for (f in full) Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(Faces.nameOf(f.id) + if (current == f.id) "  (in use)" else "", color = C.Ink, modifier = Modifier.weight(1f))
+                            Btn("Replace", primary = false) { Faces.replace(f) }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = { Btn("Cancel", primary = false) { Faces.cancelReplace() } },
+            )
+        }
         Section("On your watch")
         Card {
             if (onWatch.isEmpty()) Text(if (s.link == Watch.Link.READY) "Reading the watch's face list…" else "Connect the watch to see its faces.", color = C.Muted)
             onWatch.forEachIndexed { i, f ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Face ${i + 1}", color = C.Ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                    Text("#%x".format(f.id), color = C.Muted, fontSize = 12.sp, modifier = Modifier.padding(end = 10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(if (f.removable) Faces.nameOf(f.id) else "Built-in face ${i + 1}", color = C.Ink, fontWeight = FontWeight.SemiBold)
+                        Text(if (f.userSlot) "downloaded" else "built in", color = C.Muted, fontSize = 12.sp)
+                    }
                     if (current == f.id) Text("In use", color = C.Ok, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     else Btn("Use", primary = false) { Faces.switchTo(f); Sync.current.value = f.id }
+                    if (f.removable && current != f.id) { Spacer(Modifier.width(6.dp)); Btn("Remove", primary = false, enabled = ui.progress == null) { Faces.remove(f) } }
                 }
             }
             Text("You can also switch faces on the watch: long-press the face.", color = C.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))

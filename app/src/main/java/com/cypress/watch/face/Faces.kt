@@ -25,6 +25,8 @@ import java.net.URLEncoder
  */
 object Faces {
     @Volatile var maxBytes: Long = 0
+    /** How many downloaded faces the watch holds at once (face info field 09). */
+    @Volatile var slots: Int = 0
     private lateinit var dir: File
 
     data class Official(val id: String, val title: String, val previewUrl: String, val binUrl: String, val size: Long)
@@ -34,6 +36,8 @@ object Faces {
         val official: List<Official> = emptyList(),
         val progress: Float? = null,
         val message: String? = null,
+        /** Set when the watch's download slots are full: the user picks a face to replace. */
+        val needRoom: List<Sync.Face>? = null,
     )
     val ui = MutableStateFlow(Ui())
     private var template: ByteArray? = null
@@ -175,11 +179,54 @@ object Faces {
     fun installDesign(i: Int) = install("Cypress · ${FaceDesigns.all[i].name}") { build(i) }
     fun installOfficial(o: Official) = install(o.title) { download(o.binUrl) ?: error("download failed") }
 
-    private fun install(label: String, make: suspend () -> ByteArray) {
+    fun nameOf(id: Long): String =
+        if (id in 990_000_000L until 990_000_000L + FaceDesigns.all.size) "Cypress · " + FaceDesigns.all[(id - 990_000_000L).toInt()].name
+        else ui.value.official.firstOrNull { it.id == id.toString() }?.title ?: "Downloaded face #$id"
+
+    private var pending: Pair<String, suspend () -> ByteArray>? = null
+
+    fun cancelReplace() { pending = null; ui.value = ui.value.copy(needRoom = null) }
+
+    /** Remove a downloaded face (apply with operate 2) and wait for the list to change. */
+    private suspend fun removeFace(f: Sync.Face): Boolean {
+        Watch.send(Proto.faceApply(f.id, f.version, 2))
+        delay(1500); Watch.send(Proto.faceList())
+        repeat(10) { delay(300); if (Sync.faces.value.none { it.id == f.id }) return true }
+        return false
+    }
+
+    fun remove(f: Sync.Face) {
+        if (job?.isActive == true) return
+        job = Watch.scope.launch {
+            ui.value = ui.value.copy(message = "Removing ${nameOf(f.id)}…")
+            val ok = removeFace(f)
+            ui.value = ui.value.copy(message = if (ok) "${nameOf(f.id)} removed from the watch." else "The watch kept ${nameOf(f.id)} (it may not allow removing that one).")
+        }
+    }
+
+    fun replace(f: Sync.Face) {
+        val p = pending ?: return
+        pending = null
+        ui.value = ui.value.copy(needRoom = null)
+        install(p.first, p.second, freeing = f)
+    }
+
+    private fun install(label: String, make: suspend () -> ByteArray, freeing: Sync.Face? = null) {
         if (job?.isActive == true) return
         job = Watch.scope.launch {
             try {
                 if (!Watch.ready) error("Connect the watch first")
+                // the watch only keeps [slots] downloaded faces; when they're all taken one has to go first
+                Watch.send(Proto.faceList()); delay(1200)
+                val users = Sync.faces.value.filter { it.userSlot }
+                if (freeing != null) {
+                    ui.value = ui.value.copy(progress = 0f, message = "Making room: removing ${nameOf(freeing.id)}…")
+                    if (!removeFace(freeing)) error("the watch wouldn't remove ${nameOf(freeing.id)}")
+                } else if (slots > 0 && users.size >= slots) {
+                    pending = label to make
+                    ui.value = ui.value.copy(progress = null, message = null, needRoom = users)
+                    return@launch
+                }
                 ui.value = ui.value.copy(progress = 0f, message = "Preparing $label…")
                 val bytes = withContext(Dispatchers.Default) { make() }
                 if (maxBytes > 0 && bytes.size > maxBytes) error("This face is too big for the watch (${bytes.size / 1024} KB, max ${maxBytes / 1024} KB)")
@@ -305,10 +352,12 @@ object Faces {
             }
             delay(800)
             Watch.send(Proto.faceApply(id, "1.0.0", 1))
-            Sync.current.value = id
             delay(1200)
             Watch.send(Proto.faceList())
-            ui.value = ui.value.copy(progress = null, message = "$label is on your watch.")
+            delay(1500)
+            val there = Sync.faces.value.any { it.id == id }
+            ProtoLog.info("after install: face $id ${if (there) "is" else "is NOT"} in the watch's list")
+            ui.value = ui.value.copy(progress = null, message = if (there) "$label is on your watch." else "The watch took the file but didn't list $label. Send me the log.")
         } finally {
             Watch.packetListeners -= l
         }

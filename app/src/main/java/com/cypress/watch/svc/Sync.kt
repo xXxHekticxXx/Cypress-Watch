@@ -26,7 +26,11 @@ object Sync {
     val faces = MutableStateFlow<List<Face>>(emptyList())
     /** Id of the face showing on the watch right now. */
     val current = MutableStateFlow<Long?>(null)
-    data class Face(val id: Long, val version: String, val type: Int)
+    /** type bits: 1 current, 2 preset, 4 deletable (a downloaded face in a user slot), 32 photo, 64 always-on */
+    data class Face(val id: Long, val version: String, val type: Int) {
+        val removable get() = type and 4 != 0
+        val userSlot get() = removable && type and 0x60 == 0
+    }
 
     private val waiting = HashMap<String, CompletableDeferred<List<ByteArray>>>()
 
@@ -141,7 +145,7 @@ object Sync {
         ProtoLog.info("face info: w=$w h=$h slot=${Proto.num(t[0x08])} fields=${t.keys.joinToString { "%02x".format(it) }}")
         if (w != null && h != null && w in 100..1000 && h in 100..1000) Watch.update { it.copy(screenW = w, screenH = h) }
         Faces.maxBytes = Proto.num(t[0x08])?.toLong() ?: Faces.maxBytes
-        t[0x0a]?.takeIf { it.size >= 4 }?.let { current.value = Proto.u32(it, 0) }
+        Proto.num(t[0x09])?.let { Faces.slots = it.toInt() }
         t[0x0b]?.let { faceList(it) }
     }
 
@@ -156,7 +160,7 @@ object Sync {
                 i += 10
             } else i++
         }
-        if (out.isNotEmpty()) faces.value = out
+        if (out.isNotEmpty()) { faces.value = out; out.firstOrNull { it.type and 1 != 0 }?.let { current.value = it.id } }
         ProtoLog.info("faces on watch: " + out.joinToString { "%08x(t%d)".format(it.id, it.type) })
     }
 
