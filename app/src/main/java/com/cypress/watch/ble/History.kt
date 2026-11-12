@@ -87,6 +87,18 @@ object History {
         return b.size
     }
 
+    /** One live reading: 01 c6 ac 01 00 <len> <time BE4> <mask...> <values...> (same value layout as history). */
+    fun live(p: ByteArray): Slot? {
+        if (p.size < 12) return null
+        val ts = Proto.u32(p, 6)
+        if (!sane(ts)) return null
+        // reuse the history decoder: a one-slot frame with offset 0
+        val body = byteArrayOf(0, 0) + p.copyOfRange(10, p.size)
+        val out = mutableListOf<Slot>()
+        decodeFrame(body, 0, ts, out)
+        return out.firstOrNull()
+    }
+
     fun sleep(packets: List<ByteArray>): List<SleepPart> {
         val data = packets.filter { it.size >= 6 && (it[4].toInt() and 0xff) != 0xfd }
         val buf = java.io.ByteArrayOutputStream()

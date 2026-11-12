@@ -299,6 +299,7 @@ fun FacesScreen(a: MainActivity) {
     val ui by Faces.ui.collectAsState()
     val s by Watch.state.collectAsState()
     val onWatch by Sync.faces.collectAsState()
+    val current by Sync.current.collectAsState()
     val w = s.screenW ?: 240; val h = s.screenH ?: 284
     LaunchedEffect(s.link) { if (s.link == Watch.Link.READY) { Watch.send(Proto.faceInfo()); Watch.send(Proto.faceList()) } }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -313,8 +314,9 @@ fun FacesScreen(a: MainActivity) {
             onWatch.forEachIndexed { i, f ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Face ${i + 1}", color = C.Ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                    Text("#%06x".format(f.id), color = C.Muted, fontSize = 12.sp, modifier = Modifier.padding(end = 10.dp))
-                    Btn("Use", primary = false) { Faces.switchTo(f) }
+                    Text("#%x".format(f.id), color = C.Muted, fontSize = 12.sp, modifier = Modifier.padding(end = 10.dp))
+                    if (current == f.id) Text("In use", color = C.Ok, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    else Btn("Use", primary = false) { Faces.switchTo(f); Sync.current.value = f.id }
                 }
             }
             Text("You can also switch faces on the watch: long-press the face.", color = C.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))

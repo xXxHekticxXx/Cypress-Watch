@@ -24,6 +24,8 @@ object Sync {
     val dataVersion = MutableStateFlow(0)
     /** Faces installed on the watch (id, version, type) from the last face list reply. */
     val faces = MutableStateFlow<List<Face>>(emptyList())
+    /** Id of the face showing on the watch right now. */
+    val current = MutableStateFlow<Long?>(null)
     data class Face(val id: Long, val version: String, val type: Int)
 
     private val waiting = HashMap<String, CompletableDeferred<List<ByteArray>>>()
@@ -65,6 +67,8 @@ object Sync {
             }
             // find phone: 01 a5 ac 02 01 <on>
             cmd == 0xa5 && mode == 0xac && p.size >= 6 && Proto.u8(p, 3) == 0x02 -> FindPhone.set(ctx, Proto.u8(p, 5) != 0)
+            // live readings (heart rate etc.) pushed by the watch: 01 c6 ac 01 00 <len> <time> <mask> <values>
+            cmd == 0xc6 && mode == 0xac && p.size >= 12 && Proto.u8(p, 4) == 0x00 -> History.live(p)?.let { db.putSlots(listOf(it)); dataVersion.value++ }
             // music buttons: 01 e2 ac 01 02 <btn>
             cmd == 0xe2 && mode == 0xac && p.size >= 6 && Proto.u8(p, 3) == 0x01 && Proto.u8(p, 4) == 0x02 -> Media.button(Proto.u8(p, 5))
         }
@@ -108,7 +112,7 @@ object Sync {
         ProtoLog.info("today: " + inner.entries.joinToString { "%02x=%d".format(it.key, Proto.num(it.value) ?: -1) })
         val steps = Proto.num(inner[0x05]) ?: return
         Watch.update { it.copy(stepsToday = steps) }
-        db.putDay(Proto.midnight(), steps, null, null)
+        db.putDay(Proto.midnight(), steps, Proto.num(inner[0x01]), Proto.num(inner[0x02]))
         dataVersion.value++
     }
 
@@ -137,25 +141,23 @@ object Sync {
         ProtoLog.info("face info: w=$w h=$h slot=${Proto.num(t[0x08])} fields=${t.keys.joinToString { "%02x".format(it) }}")
         if (w != null && h != null && w in 100..1000 && h in 100..1000) Watch.update { it.copy(screenW = w, screenH = h) }
         Faces.maxBytes = Proto.num(t[0x08])?.toLong() ?: Faces.maxBytes
-        t[0x0b]?.let { faceList(byteArrayOf(Proto.GET, 0x0b, it.size.toByte()) + it) }
+        t[0x0a]?.takeIf { it.size >= 4 }?.let { current.value = Proto.u32(it, 0) }
+        t[0x0b]?.let { faceList(it) }
     }
 
-    /** Face table entries: <version 5 ASCII "1.0.0"> <type> <flag> <id 3 bytes>. */
+    /** Face table: 10-byte entries <id BE4> <version "1.0.0"> <type>, sometimes after a length byte. */
     private fun faceList(d: ByteArray) {
         val out = mutableListOf<Face>()
-        val s = d
         var i = 0
-        while (i + 10 <= s.size) {
-            val v = s.copyOfRange(i, i + 5)
-            if (v[1] == '.'.code.toByte() && v[3] == '.'.code.toByte()) {
-                val type = Proto.u8(s, i + 5)
-                val id = (Proto.u8(s, i + 7).toLong() shl 16) or (Proto.u8(s, i + 8).toLong() shl 8) or Proto.u8(s, i + 9).toLong()
-                out += Face(id, v.toString(Charsets.US_ASCII), type)
+        while (i + 10 <= d.size) {
+            val dots = d[i + 5] == '.'.code.toByte() && d[i + 7] == '.'.code.toByte()
+            if (dots) {
+                out += Face(Proto.u32(d, i), d.copyOfRange(i + 4, i + 9).toString(Charsets.US_ASCII), Proto.u8(d, i + 9))
                 i += 10
             } else i++
         }
         if (out.isNotEmpty()) faces.value = out
-        ProtoLog.info("faces on watch: " + out.joinToString { "%06x(t%d)".format(it.id, it.type) })
+        ProtoLog.info("faces on watch: " + out.joinToString { "%08x(t%d)".format(it.id, it.type) })
     }
 
     // ---------- phone -> watch ----------
@@ -177,11 +179,21 @@ object Sync {
             Watch.send(Proto.getAll(Proto.DAY))
             Watch.send(Proto.historyPrep(from, now))
             delay(500)
-            val fit = request(Proto.historyFitness(from, now), "198/170/1")
-            if (fit != null) {
-                val slots = History.fitness(fit)
-                ProtoLog.info("fitness: ${fit.size} packets -> ${slots.size} minutes")
-                if (slots.isNotEmpty()) db.putSlots(slots)
+            var fit: List<ByteArray>? = null
+            var cursor = from
+            for (round in 0 until days + 2) {
+                val r = request(Proto.historyFitness(cursor, now), "198/170/1") ?: break
+                fit = r
+                val slots = History.fitness(r)
+                ProtoLog.info("fitness from ${cursor}: ${r.size} packets -> ${slots.size} minutes")
+                if (slots.isEmpty()) break
+                db.putSlots(slots)
+                dataVersion.value++
+                val last = slots.maxOf { it.ts }
+                // next request starts the day after the one just returned (or right after its last minute)
+                val next = maxOf(last + 60, dayAfter(slots.minOf { it.ts }))
+                if (next <= cursor || next >= now - 120) break
+                cursor = next
             }
             val sl = request(Proto.historySleep(now - 7 * 86400L, now), "198/170/4")
             if (sl != null) {
@@ -195,6 +207,13 @@ object Sync {
             syncing = false
             Watch.update { it.copy(busy = null) }
         }
+    }
+
+    private fun dayAfter(ts: Long): Long {
+        val c = java.util.Calendar.getInstance(); c.timeInMillis = ts * 1000
+        c.set(java.util.Calendar.HOUR_OF_DAY, 0); c.set(java.util.Calendar.MINUTE, 0); c.set(java.util.Calendar.SECOND, 0); c.set(java.util.Calendar.MILLISECOND, 0)
+        c.add(java.util.Calendar.DAY_OF_MONTH, 1)
+        return c.timeInMillis / 1000
     }
 
     fun pushAlarms() { if (Watch.ready) Watch.send(Proto.alarms(Prefs.alarms, Watch.maxPacket)) }
