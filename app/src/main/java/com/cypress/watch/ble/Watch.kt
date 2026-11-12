@@ -71,6 +71,7 @@ object Watch {
         ctx = c.applicationContext
         scope.launch {
             for (p in queue) {
+                queueCount.decrementAndGet()
                 val g = gatt; val ch = writeChar
                 if (g == null || ch == null) continue
                 writeDone = CompletableDeferred()
@@ -88,8 +89,13 @@ object Watch {
         }
     }
 
-    fun send(p: ByteArray) { queue.trySend(p) }
-    fun send(ps: List<ByteArray>) { ps.forEach { queue.trySend(it) } }
+    fun send(p: ByteArray) { queueCount.incrementAndGet(); queue.trySend(p) }
+    /** Drops anything still waiting to be sent (used when the watch asks to resend from an earlier piece). */
+    fun clearQueue() { while (queue.tryReceive().isSuccess) queueCount.decrementAndGet() }
+    /** Number of packets still waiting. */
+    val queued get() = queueCount.get()
+    private val queueCount = java.util.concurrent.atomic.AtomicInteger(0)
+    fun send(ps: List<ByteArray>) { ps.forEach { send(it) } }
     val ready get() = state.value.link == Link.READY
 
     // ---------- scanning ----------
