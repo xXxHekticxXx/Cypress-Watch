@@ -224,7 +224,7 @@ object Faces {
                 delay(300)
                 while (acked < chunks) {
                     while (next < chunks && next - acked < window) { Watch.send(frame(next)); next++ }
-                    val r = withTimeoutOrNull(4000) { events.receive() } ?: error("the watch stopped answering at piece $acked of $chunks")
+                    val r = withTimeoutOrNull(10000) { events.receive() } ?: error("the watch stopped answering at piece $acked of $chunks")
                     val st = status(r)
                     when {
                         st == 4 || st == 5 || st == 8 -> { Watch.clearQueue(); throw Stopped(st) }
