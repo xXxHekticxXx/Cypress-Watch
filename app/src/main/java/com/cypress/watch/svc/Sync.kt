@@ -161,6 +161,11 @@ object Sync {
             } else i++
         }
         if (out.isNotEmpty()) { faces.value = out; out.firstOrNull { it.type and 1 != 0 }?.let { current.value = it.id } }
+        if (out.isNotEmpty() && com.cypress.watch.Prefs.rescue) {
+            val left = out.filter { it.id in 990_000_000L until 990_000_020L }
+            if (left.isEmpty()) { com.cypress.watch.Prefs.rescue = false; ProtoLog.info("rescue: no Cypress faces left on the watch, rescue mode off") }
+            else { ProtoLog.info("rescue: still on the watch: " + left.joinToString { it.id.toString() }); Watch.send(Proto.faceApply(0x0089b5e9L, "1.0.0", 0)); left.forEach { Watch.send(Proto.faceApply(it.id, it.version, 2)) } }
+        }
         ProtoLog.info("faces on watch: " + out.joinToString { "%08x(t%d)".format(it.id, it.type) })
     }
 

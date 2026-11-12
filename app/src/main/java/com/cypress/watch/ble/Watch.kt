@@ -163,6 +163,11 @@ object Watch {
     }
 
     private val pending = ArrayDeque<BluetoothGattDescriptor>()
+    @Volatile private var mtuDone = false
+
+    /** Switch to a built-in face, then delete every possible Cypress face id (each frame fits in 20 bytes). */
+    fun rescueFrames(): List<ByteArray> =
+        listOf(Proto.faceApply(0x0089b5e9L, "1.0.0", 0)) + (0 until 20).map { Proto.faceApply(990_000_000L + it, "1.0.0", 2) }
 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
@@ -189,10 +194,21 @@ object Watch {
                 ProtoLog.info("services: " + g.services.joinToString { it.uuid.toString().substring(4, 8) })
                 return
             }
-            g.requestMtu(247)
+            ProtoLog.info("services found")
+            mtuDone = false
+            if (Prefs.rescue) {
+                // the watch may only stay up for a few seconds: get the rescue commands out before anything else
+                ProtoLog.info("rescue: switching to a built-in face and removing Cypress faces")
+                rescueFrames().forEach { send(it) }
+                main.postDelayed({ g.requestMtu(247) }, 1500)
+            } else g.requestMtu(247)
+            // some watches never answer the MTU request; carry on without it
+            main.postDelayed({ if (!mtuDone && gatt == g) onMtuChanged(g, 23, 1) }, 4500)
         }
 
         override fun onMtuChanged(g: BluetoothGatt, m: Int, status: Int) {
+            if (mtuDone) return
+            mtuDone = true
             mtu = if (status == BluetoothGatt.GATT_SUCCESS) m else 23
             ProtoLog.info("mtu=$mtu")
             pending.clear()

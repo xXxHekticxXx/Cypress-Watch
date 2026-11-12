@@ -176,7 +176,8 @@ object Faces {
     // ---------- uploading (group E3) ----------
     private var job: Job? = null
 
-    fun installDesign(i: Int) = install("Cypress · ${FaceDesigns.all[i].name}") { build(i) }
+    /** Cypress designs are switched off: the rebuilt Midnight file made the watch restart over and over. */
+    fun installDesign(i: Int) { ui.value = ui.value.copy(message = "Cypress designs are turned off for now — the last one made the watch restart. Official faces still install.") }
     fun installOfficial(o: Official) = install(o.title) { download(o.binUrl) ?: error("download failed") }
 
     fun nameOf(id: Long): String =

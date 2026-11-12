@@ -17,6 +17,11 @@ object Prefs {
         get() = p.getString("deviceName", null)
         set(v) = p.edit().putString("deviceName", v).apply()
 
+    /** Rescue mode: on every connection, first switch the watch to a built-in face and remove any Cypress face. */
+    var rescue: Boolean
+        get() = p.getBoolean("rescue_v1", true)
+        set(v) = p.edit().putBoolean("rescue_v1", v).apply()
+
     var forwardCalls: Boolean
         get() = p.getBoolean("calls", true)
         set(v) = p.edit().putBoolean("calls", v).apply()
