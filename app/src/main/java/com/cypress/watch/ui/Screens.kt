@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import com.cypress.watch.Alarm
 import com.cypress.watch.Prefs
 import com.cypress.watch.ProtoLog
+import com.cypress.watch.Updater
 import com.cypress.watch.ble.History
 import com.cypress.watch.ble.Proto
 import com.cypress.watch.ble.Watch
@@ -112,6 +113,7 @@ fun TodayScreen(a: MainActivity) {
     val steps = maxOf(s.stepsToday ?: 0, sum.steps)
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Header("Cypress Watch")
+        UpdateCard(a, onlyIfNew = true)
         ConnectionCard(a)
         if (!a.hasNotificationAccess()) Card(Modifier.clickable { a.openNotificationAccess() }) {
             Text("Turn on notification access", color = C.Warn, fontWeight = FontWeight.Bold)
@@ -368,6 +370,30 @@ private fun UrlImage(url: String, modifier: Modifier) {
     Box(modifier.background(Color.Black, RoundedCornerShape(10.dp))) { img?.let { Image(it, null, Modifier.fillMaxSize()) } }
 }
 
+@Composable
+fun UpdateCard(a: MainActivity, onlyIfNew: Boolean) {
+    val u by Updater.state.collectAsState()
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { if (u.latest == null && !u.checking) Updater.check() }
+    val newer = Updater.available(a)
+    if (onlyIfNew && !newer && u.progress == null) return
+    Card {
+        if (newer) {
+            Text("Update available: ${u.latest}", color = C.Ok, fontWeight = FontWeight.Bold)
+            Text("You have ${Updater.current(a)}. Installs over this one and keeps your data.", color = C.Muted, fontSize = 13.sp)
+        } else {
+            Text("Cypress Watch ${Updater.current(a)}", color = C.Ink, fontWeight = FontWeight.Bold)
+            Text(when { u.checking -> "Checking for updates…"; u.latest != null -> "You have the newest version."; else -> "" }, color = C.Muted, fontSize = 13.sp)
+        }
+        u.progress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), color = C.Accent) }
+        u.error?.let { Text(it, color = C.Warn, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp)) }
+        Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (newer) Btn(if (u.progress != null) "Downloading…" else "⬇ Install update", enabled = u.progress == null) { scope.launch { Updater.install(a) } }
+            else Btn(if (u.checking) "Checking…" else "Check for updates", primary = false, enabled = !u.checking) { scope.launch { Updater.check() } }
+        }
+    }
+}
+
 // ---------------- Watch ----------------
 @Composable
 fun WatchScreen(a: MainActivity, onLog: () -> Unit, forgot: () -> Unit) {
@@ -433,6 +459,8 @@ fun WatchScreen(a: MainActivity, onLog: () -> Unit, forgot: () -> Unit) {
                 ToggleRow("Notification access", if (a.hasNotificationAccess()) "on" else "off · tap to turn on", "🔔", a.hasNotificationAccess()) { a.openNotificationAccess() }
                 ToggleRow("Run in the background", if (a.ignoringBattery()) "on" else "off · Samsung may cut the connection", "🔋", a.ignoringBattery()) { a.askBattery() }
             }
+            Section("App updates")
+            UpdateCard(a, onlyIfNew = false)
             Section("About")
             Card {
                 Text("${s.name ?: Prefs.deviceName ?: "Watch"}${s.model?.let { " · $it" } ?: ""}", color = C.Ink, fontWeight = FontWeight.Bold)
