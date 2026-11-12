@@ -66,25 +66,25 @@ class FaceFile(val src: ByteArray) {
 
     // ---------- decoding (for previews) ----------
     /** ARGB frames of an element, or null when its colour format isn't one we read. */
-    fun decode(it: Item): List<IntArray>? = runCatching {
-        val n = it.width * it.height
+    fun decode(e: Item): List<IntArray>? = runCatching {
+        val n = e.width * e.height
         when (version) {
-            1, 2 -> if (isRle(it.type)) {
-                var p = it.offset
-                List(it.frames) {
+            1, 2 -> if (isRle(e.type)) {
+                var p = e.offset
+                List(e.frames) {
                     val blk = u32(src, p) + 4
-                    val px = rleDecode(src, p, it.width, it.height)
+                    val px = rleDecode(src, p, e.width, e.height)
                     p += blk; px
                 }
-            } else List(it.frames) { f -> IntArray(n) { i -> be565(src, it.offset + (f * n + i) * 2, it.copyImage) } }
+            } else List(e.frames) { f -> IntArray(n) { i -> be565(src, e.offset + (f * n + i) * 2, e.copyImage) } }
             else -> {
-                var p = it.offset
-                List(it.frames) {
+                var p = e.offset
+                List(e.frames) {
                     val w = u16(src, p + 4); val h = u16(src, p + 6); val method = src[p + 9].toInt() and 0xff
                     val size = u32(src, p + 12)
                     val raw = lz4().safeDecompressor().decompress(src, p + 20, size, w * h * (if (method == 3) 3 else 2))
                     p += 20 + size
-                    if (method == 2) IntArray(w * h) { i -> le565(raw, i * 2, it.copyImage) }
+                    if (method == 2) IntArray(w * h) { i -> le565(raw, i * 2, e.copyImage) }
                     else IntArray(w * h) { i -> argb6666(raw, i * 3) }
                 }
             }

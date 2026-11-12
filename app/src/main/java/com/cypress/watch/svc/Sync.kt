@@ -9,6 +9,7 @@ import com.cypress.watch.ble.History
 import com.cypress.watch.ble.Proto
 import com.cypress.watch.ble.Watch
 import com.cypress.watch.data.HealthDb
+import com.cypress.watch.face.Faces
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
