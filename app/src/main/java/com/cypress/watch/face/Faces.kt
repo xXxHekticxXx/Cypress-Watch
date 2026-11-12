@@ -208,10 +208,10 @@ object Faces {
         val p = pending ?: return
         pending = null
         ui.value = ui.value.copy(needRoom = null)
-        install(p.first, p.second, freeing = f)
+        install(p.first, f, p.second)
     }
 
-    private fun install(label: String, make: suspend () -> ByteArray, freeing: Sync.Face? = null) {
+    private fun install(label: String, freeing: Sync.Face? = null, make: suspend () -> ByteArray) {
         if (job?.isActive == true) return
         job = Watch.scope.launch {
             try {
