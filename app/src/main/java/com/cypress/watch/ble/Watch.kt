@@ -174,14 +174,14 @@ object Watch {
             ProtoLog.info("link state=$newState status=$status")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 retry = 0
-                main.postDelayed({ g.discoverServices() }, 600)
+                main.postDelayed({ ProtoLog.info("discovering services"); g.discoverServices() }, if (Prefs.rescue) 50 else 600)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 writeChar = null
                 update { it.copy(link = if (wantConnected) Link.CONNECTING else Link.OFF) }
                 if (wantConnected) {
                     retry++
                     g.close(); if (gatt == g) gatt = null
-                    main.postDelayed({ if (wantConnected) connect() }, (2000L * retry).coerceAtMost(30000))
+                    main.postDelayed({ if (wantConnected) connect() }, if (Prefs.rescue) 500L else (2000L * retry).coerceAtMost(30000))
                 }
             }
         }
