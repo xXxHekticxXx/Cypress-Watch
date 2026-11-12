@@ -44,6 +44,7 @@ object Faces {
         val f = runCatching { FaceFile(b) }.getOrElse { ProtoLog.info("template ($from) unreadable: ${it.message}"); return false }
         if (f.item(17) == null) { ProtoLog.info("template ($from) has no background element"); return false }
         template = b; previews.clear()
+        runCatching { f.report().lines().forEach { ProtoLog.info(it) } }
         ui.value = ui.value.copy(templateState = "Using a ${f.width}×${f.height} official face as the base (format v${f.version})", templateReady = true)
         return true
     }
@@ -145,7 +146,7 @@ object Faces {
             val sp = IntArray(pv.width * pv.height); small.getPixels(sp, 0, pv.width, 0, 0, pv.width, pv.height)
             f.replaceFrame(10, 0, sp)
         }
-        f.tintAll(FaceDesigns.all[i].accent)
+        // (digit/hand recolouring is off until the rebuilt file is confirmed safe on this watch)
         val out = f.build()
         // sanity check: what we made must read back
         FaceFile(out).items.forEach { require(FaceFile(out).decode(it) != null || f.version >= 3) { "rebuilt face doesn't decode" } }

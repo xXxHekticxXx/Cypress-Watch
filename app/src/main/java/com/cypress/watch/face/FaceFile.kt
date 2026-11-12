@@ -162,6 +162,27 @@ class FaceFile(val src: ByteArray) {
         return p - it.offset
     }
 
+    /** Text report for the log: header, element table, start of each block, and whether our encoder reproduces the official bytes. */
+    fun report(): String {
+        fun hx(a: Int, n: Int) = (a until minOf(src.size, a + n)).joinToString(" ") { "%02x".format(src[it]) }
+        val sb = StringBuilder("face v$version ${width}x$height size=${src.size} header: ${hx(0, 24)}\n")
+        for (it in items) {
+            sb.append("  type ${it.type} ${it.width}x${it.height} at ${it.x},${it.y} frames=${it.frames} copy=${it.copyImage} off=${it.offset} rec: ${hx(it.tableOffset, 24)}\n")
+            sb.append("    data: ${hx(it.offset, 48)}\n")
+            if (isRle(it.type)) {
+                val px = runCatching { rleDecode(src, it.offset, it.width, it.height) }.getOrNull()
+                if (px != null) {
+                    val mine = rleEncodeFrame(px, it.width, it.height)
+                    val orig = u32(src, it.offset) + 4
+                    var same = mine.size == orig
+                    if (same) for (k in mine.indices) if (mine[k] != src[it.offset + k]) { same = false; sb.append("    re-encode differs at byte $k\n"); break }
+                    sb.append("    re-encode: mine=${mine.size} official=$orig identical=$same\n")
+                }
+            }
+        }
+        return sb.toString()
+    }
+
     // ---------- pixels ----------
     private fun tinted(px: IntArray, color: Int): IntArray {
         val cr = (color ushr 16) and 0xff; val cg = (color ushr 8) and 0xff; val cb = color and 0xff
