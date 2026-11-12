@@ -89,6 +89,12 @@ object Watch {
         }
     }
 
+    /** Ask Android for the shortest connection interval (used while sending a watch face). */
+    @android.annotation.SuppressLint("MissingPermission")
+    fun fastLink(on: Boolean) {
+        runCatching { gatt?.requestConnectionPriority(if (on) android.bluetooth.BluetoothGatt.CONNECTION_PRIORITY_HIGH else android.bluetooth.BluetoothGatt.CONNECTION_PRIORITY_BALANCED) }
+        ProtoLog.info("fast link ${if (on) "on" else "off"}")
+    }
     fun send(p: ByteArray) { queueCount.incrementAndGet(); queue.trySend(p) }
     /** Drops anything still waiting to be sent (used when the watch asks to resend from an earlier piece). */
     fun clearQueue() { while (queue.tryReceive().isSuccess) queueCount.decrementAndGet() }

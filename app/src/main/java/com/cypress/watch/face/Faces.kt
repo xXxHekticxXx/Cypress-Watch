@@ -212,28 +212,35 @@ object Faces {
             val slice = (Watch.maxPacket - 5).coerceAtLeast(15)
             val chunks = (data.size + slice - 1) / slice
             fun frame(k: Int) = Proto.b(1, 0xe3, 0xab, 0x01, k and 0xff) + data.copyOfRange(k * slice, minOf(data.size, (k + 1) * slice))
-            // The watch expects the file streamed quickly (it gives up after a few seconds without enough data),
-            // so pieces go out back to back; it only speaks up to ask for a resend (6) or to stop (4/5/8).
-            var from = 0
-            var sent = 0
+            // A few pieces in flight at once (all at once froze the watch; one at a time was too slow and it timed out).
+            // A fast link is requested for the transfer so each round trip is ~15 ms instead of ~120 ms.
+            val window = 4
+            var acked = 0
+            var next = 0
+            val sent = chunks
             val t0 = System.currentTimeMillis()
-            while (true) {
-                for (k in from until chunks) Watch.send(frame(k))
-                sent = chunks
-                var resend: Int? = null
-                while (Watch.queued > 0 && resend == null) {
-                    val r = withTimeoutOrNull(200) { events.receive() }
-                    val st = r?.let { status(it) }
-                    if (st == 6 && r.size >= 8) resend = (u(r, 6) shl 8) or u(r, 7)
-                    else if (st == 4 || st == 5 || st == 8) { Watch.clearQueue(); throw Stopped(st) }
-                    val left = Watch.queued
-                    ui.value = ui.value.copy(progress = (chunks - left) / chunks.toFloat(), message = "Sending $label… ${(chunks - left) * 100 / chunks}%")
+            Watch.fastLink(true)
+            try {
+                delay(300)
+                while (acked < chunks) {
+                    while (next < chunks && next - acked < window) { Watch.send(frame(next)); next++ }
+                    val r = withTimeoutOrNull(4000) { events.receive() } ?: error("the watch stopped answering at piece $acked of $chunks")
+                    val st = status(r)
+                    when {
+                        st == 4 || st == 5 || st == 8 -> { Watch.clearQueue(); throw Stopped(st) }
+                        st == 6 && r.size >= 8 -> {
+                            val from = ((u(r, 6) shl 8) or u(r, 7)).coerceIn(0, chunks - 1)
+                            ProtoLog.info("watch asked to resend from piece $from")
+                            Watch.clearQueue(); acked = from; next = from
+                        }
+                        r.size == 5 && u(r, 2) == 0xab && u(r, 3) == 0x01 && u(r, 4) != 0xfd -> {
+                            val d = (u(r, 4) - (acked and 0xff)) and 0xff
+                            if (d < window && acked + d < next) acked += d + 1
+                        }
+                    }
+                    ui.value = ui.value.copy(progress = acked / chunks.toFloat(), message = "Sending $label… ${acked * 100 / chunks}%")
                 }
-                if (resend == null) break
-                ProtoLog.info("watch asked to resend from piece $resend")
-                Watch.clearQueue()
-                from = resend.coerceIn(0, chunks - 1)
-            }
+            } finally { Watch.fastLink(false) }
             ProtoLog.info("sent $sent pieces in ${System.currentTimeMillis() - t0} ms")
             // closing packet carries the xor of every byte of every piece
             var xor = 0
